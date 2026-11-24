@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>量子ゲート・ブロッホ球ビジュアライザー</title>
+<script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen">
+<div class="max-w-4xl mx-auto p-4">
+  <h1 class="text-2xl font-bold text-center text-cyan-300 mb-1">量子ゲート・ブロッホ球ビジュアライザー</h1>
+  <p class="text-center text-slate-400 mb-4 text-sm">X/Y/Z/H/T/S量子ゲートの量子ビット回転を可視化</p>
+
+  <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+    <!-- Bloch Sphere Canvas -->
+    <div class="bg-slate-900 rounded-xl p-4 flex flex-col items-center">
+      <canvas id="bloch" width="280" height="280" class="rounded-lg"></canvas>
+      <div class="mt-2 text-xs text-slate-400 text-center">
+        |ψ⟩ = α|0⟩ + β|1⟩ &nbsp;|&nbsp; Bloch Sphere
+      </div>
+      <div id="state-display" class="mt-2 font-mono text-sm text-cyan-300 text-center"></div>
+    </div>
+
+    <!-- Controls -->
+    <div class="space-y-4">
+      <!-- Quantum Gates -->
+      <div class="bg-slate-900 rounded-xl p-4">
+        <div class="text-sm font-semibold text-slate-300 mb-3">量子ゲート適用</div>
+        <div class="grid grid-cols-3 gap-2">
+          <button onclick="applyGate('X')" class="gate-btn bg-red-800 hover:bg-red-700 text-white py-2 rounded-lg font-mono font-bold text-lg" aria-label="Xゲート">X</button>
+          <button onclick="applyGate('Y')" class="gate-btn bg-green-800 hover:bg-green-700 text-white py-2 rounded-lg font-mono font-bold text-lg" aria-label="Yゲート">Y</button>
+          <button onclick="applyGate('Z')" class="gate-btn bg-blue-800 hover:bg-blue-700 text-white py-2 rounded-lg font-mono font-bold text-lg" aria-label="Zゲート">Z</button>
+          <button onclick="applyGate('H')" class="gate-btn bg-purple-800 hover:bg-purple-700 text-white py-2 rounded-lg font-mono font-bold text-lg" aria-label="Hゲート（アダマール）">H</button>
+          <button onclick="applyGate('S')" class="gate-btn bg-yellow-800 hover:bg-yellow-700 text-white py-2 rounded-lg font-mono font-bold text-lg" aria-label="Sゲート">S</button>
+          <button onclick="applyGate('T')" class="gate-btn bg-pink-800 hover:bg-pink-700 text-white py-2 rounded-lg font-mono font-bold text-lg" aria-label="Tゲート">T</button>
+        </div>
+        <button onclick="resetState()" class="mt-2 w-full bg-slate-700 hover:bg-slate-600 text-slate-300 py-1.5 rounded-lg text-sm" aria-label="リセット">|0⟩にリセット</button>
+      </div>
+
+      <!-- Gate descriptions -->
+      <div class="bg-slate-900 rounded-xl p-4">
+        <div class="text-sm font-semibold text-slate-300 mb-2">ゲート説明</div>
+        <div id="gate-desc" class="text-sm text-slate-400">ゲートを押して適用してください</div>
+      </div>
+
+      <!-- Circuit history -->
+      <div class="bg-slate-900 rounded-xl p-4">
+        <div class="text-sm font-semibold text-slate-300 mb-2">回路履歴</div>
+        <div id="circuit-history" class="flex flex-wrap gap-1 min-h-8 font-mono text-sm"></div>
+        <button onclick="clearHistory()" class="mt-2 text-xs text-slate-500 hover:text-slate-300" aria-label="履歴をクリア">クリア</button>
+      </div>
+
+      <!-- State vector -->
+      <div class="bg-slate-900 rounded-xl p-4">
+        <div class="text-sm font-semibold text-slate-300 mb-2">状態ベクトル</div>
+        <div id="vector-display" class="font-mono text-xs text-cyan-300 space-y-1"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// Qubit state as [alpha_re, alpha_im, beta_re, beta_im]
+let state = [1, 0, 0, 0]; // |0>
+let theta = 0, phi = 0;
+let animFrame = null;
+let targetTheta = 0, targetPhi = 0;
+let animating = false;
+let history = [];
+
+const gateDescs = {
+  X: 'パウリX（NOTゲート）: ブロッホ球をX軸周りに180°回転。|0⟩↔|1⟩を入れ替える',
+  Y: 'パウリY: Y軸周りに180°回転。|0⟩→i|1⟩, |1⟩→-i|0⟩',
+  Z: 'パウリZ（位相反転）: Z軸周りに180°回転。|1⟩の位相を反転',
+  H: 'アダマール: X軸とZ軸の間（±45°）に回転。重ね合わせ状態を作る',
+  S: 'Sゲート: Z軸周りに90°回転。位相をπ/2回転',
+  T: 'Tゲート: Z軸周りに45°回転。位相をπ/4回転（Toffoliゲートの基礎）',
+};
+
+function matMul2(m, v) {
+  return [
+    m[0][0]*v[0] - m[0][1]*v[1] + m[0][2]*v[2] - m[0][3]*v[3],
+    m[0][0]*v[1] + m[0][1]*v[0] + m[0][2]*v[3] + m[0][3]*v[2],
+    m[1][0]*v[0] - m[1][1]*v[1] + m[1][2]*v[2] - m[1][3]*v[3],
+    m[1][0]*v[1] + m[1][1]*v[0] + m[1][2]*v[3] + m[1][3]*v[2],
+  ];
+}
+
+const gates = {
+  X: [[0,0,1,0],[1,0,0,0]],
+  Y: [[0,0,0,-1],[0,1,0,0]], // simplified
+  Z: [[1,0,0,0],[0,0,-1,0]],
+  H: [[1/Math.SQRT2,0,1/Math.SQRT2,0],[1/Math.SQRT2,0,-1/Math.SQRT2,0]],
+  S: [[1,0,0,0],[0,0,0,1]],
+  T: [[1,0,0,0],[0,0,Math.cos(Math.PI/4),Math.sin(Math.PI/4)]],
+};
+
+function stateToBloch() {
+  // Convert state vector to theta, phi on Bloch sphere
+  const a = Math.sqrt(state[0]*state[0]+state[1]*state[1]);
+  const b = Math.sqrt(state[2]*state[2]+state[3]*state[3]);
+  theta = 2 * Math.acos(Math.min(1, a));
+  phi = Math.atan2(state[3], state[2]) - Math.atan2(state[1], state[0]);
+}
+
+function applyGate(g) {
+  const m = gates[g];
+  if (!m) return;
+  // Apply gate matrix to state
+  const ns = [
+    m[0][0]*state[0] - m[0][1]*state[1] + m[0][2]*state[2] - m[0][3]*state[3],
+    m[0][0]*state[1] + m[0][1]*state[0] + m[0][2]*state[3] + m[0][3]*state[2],
+    m[1][0]*state[0] - m[1][1]*state[1] + m[1][2]*state[2] - m[1][3]*state[3],
+    m[1][0]*state[1] + m[1][1]*state[0] + m[1][2]*state[3] + m[1][3]*state[2],
+  ];
+  // Normalize
+  const norm = Math.sqrt(ns[0]**2+ns[1]**2+ns[2]**2+ns[3]**2);
+  state = ns.map(x => x/(norm||1));
+  stateToBloch();
+  history.push(g);
+  drawBloch();
+  updateDisplays(g);
+}
+
+function resetState() {
+  state = [1,0,0,0];
+  theta = 0; phi = 0;
+  history = [];
+  drawBloch();
+  updateDisplays(null);
+}
+
+function clearHistory() {
+  history = [];
+  document.getElementById('circuit-history').innerHTML = '';
+}
+
+function updateDisplays(lastGate) {
+  const a = Math.sqrt(state[0]**2+state[1]**2).toFixed(3);
+  const b = Math.sqrt(state[2]**2+state[3]**2).toFixed(3);
+  document.getElementById('state-display').textContent = `θ=${(theta*180/Math.PI).toFixed(1)}° φ=${(phi*180/Math.PI).toFixed(1)}°`;
+  document.getElementById('vector-display').innerHTML = `
+    <div>α (|0⟩係数): ${state[0].toFixed(3)} + ${state[1].toFixed(3)}i (|α|=${a})</div>
+    <div>β (|1⟩係数): ${state[2].toFixed(3)} + ${state[3].toFixed(3)}i (|β|=${b})</div>
+    <div>P(|0⟩)=${(parseFloat(a)**2*100).toFixed(1)}% / P(|1⟩)=${(parseFloat(b)**2*100).toFixed(1)}%</div>
+  `;
+  if (lastGate) document.getElementById('gate-desc').textContent = gateDescs[lastGate] || '';
+  const histEl = document.getElementById('circuit-history');
+  const colors = {X:'bg-red-800',Y:'bg-green-800',Z:'bg-blue-800',H:'bg-purple-800',S:'bg-yellow-800',T:'bg-pink-800'};
+  histEl.innerHTML = history.map(g=>`<span class="px-2 py-1 rounded ${colors[g]||'bg-gray-800'} text-white text-xs">${g}</span>`).join(' → ');
+}
+
+function drawBloch() {
+  const canvas = document.getElementById('bloch');
+  const ctx = canvas.getContext('2d');
+  const cx = 140, cy = 140, r = 110;
+  ctx.clearRect(0,0,280,280);
+
+  // Background
+  ctx.fillStyle = '#0f172a';
+  ctx.fillRect(0,0,280,280);
+
+  // Draw sphere (ellipse)
+  ctx.strokeStyle = '#334155';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.ellipse(cx, cy, r, r, 0, 0, 2*Math.PI);
+  ctx.stroke();
+
+  // Equator
+  ctx.beginPath();
+  ctx.ellipse(cx, cy, r, r*0.3, 0, 0, 2*Math.PI);
+  ctx.setLineDash([4,4]);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  // Axes
+  const axes = [
+    {dx:r,dy:0,label:'+X',c:'#ef4444'},{dx:-r*0.6,dy:r*0.4,label:'-X',c:'#ef4444'},
+    {dx:r*0.5,dy:-r*0.4,label:'+Y',c:'#22c55e'},{dx:-r*0.5,dy:r*0.4,label:'-Y',c:'#22c55e'},
+    {dx:0,dy:-r,label:'|0⟩',c:'#60a5fa'},{dx:0,dy:r,label:'|1⟩',c:'#60a5fa'},
+  ];
+  axes.forEach(a => {
+    ctx.strokeStyle = a.c; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(cx,cy); ctx.lineTo(cx+a.dx,cy+a.dy); ctx.stroke();
+    ctx.fillStyle = a.c; ctx.font = '11px sans-serif';
+    ctx.fillText(a.label, cx+a.dx+3, cy+a.dy+4);
+  });
+
+  // State vector on Bloch sphere (3D projection)
+  const sinT = Math.sin(theta), cosT = Math.cos(theta);
+  const sinP = Math.sin(phi), cosP = Math.cos(phi);
+  const bx = sinT * cosP;
+  const by = sinT * sinP;
+  const bz = cosT;
+  // Project to 2D (y-axis into screen at ~30deg)
+  const angle = Math.PI / 6;
+  const px = cx + r * (bx * Math.cos(angle) - by * Math.sin(angle) * 0.5);
+  const py = cy - r * bz + r * by * 0.3;
+
+  // Draw vector
+  ctx.strokeStyle = '#67e8f9';
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.moveTo(cx, cy);
+  ctx.lineTo(px, py);
+  ctx.stroke();
+
+  // Arrow head
+  const ang = Math.atan2(py-cy, px-cx);
+  ctx.fillStyle = '#67e8f9';
+  ctx.beginPath();
+  ctx.moveTo(px, py);
+  ctx.lineTo(px-12*Math.cos(ang-0.4), py-12*Math.sin(ang-0.4));
+  ctx.lineTo(px-12*Math.cos(ang+0.4), py-12*Math.sin(ang+0.4));
+  ctx.closePath();
+  ctx.fill();
+
+  // State dot
+  ctx.fillStyle = '#fbbf24';
+  ctx.beginPath();
+  ctx.arc(px, py, 5, 0, 2*Math.PI);
+  ctx.fill();
+}
+
+drawBloch();
+updateDisplays(null);
+</script>
+</body>
+</html>
